@@ -36,7 +36,7 @@ PerGpuCache<AVBufferRef, Deleterp<AVBufferRef, void, av_buffer_unref>>
 UniqueAVBufferRef getVaapiContext(const torch::Device& device) {
   enum AVHWDeviceType type = av_hwdevice_find_type_by_name("vaapi");
   TORCH_CHECK(type != AV_HWDEVICE_TYPE_NONE, "Failed to find vaapi device");
-  torch::DeviceIndex nonNegativeDeviceIndex = getNonNegativeDeviceIndex(device);
+  int deviceIndex = getDeviceIndex(device);
 
   UniqueAVBufferRef hw_device_ctx = g_cached_hw_device_ctxs.get(device);
   if (hw_device_ctx) {
@@ -45,7 +45,7 @@ UniqueAVBufferRef getVaapiContext(const torch::Device& device) {
 
   std::string renderD = "/dev/dri/renderD128";
 
-  sycl::device syclDevice = c10::xpu::get_raw_device(nonNegativeDeviceIndex);
+  sycl::device syclDevice = c10::xpu::get_raw_device(deviceIndex);
   if (syclDevice.has(sycl::aspect::ext_intel_pci_address)) {
     auto BDF =
         syclDevice.get_info<sycl::ext::intel::info::device::pci_address>();
@@ -64,6 +64,18 @@ UniqueAVBufferRef getVaapiContext(const torch::Device& device) {
 }
 
 } // namespace
+
+int getDeviceIndex(const torch::Device& device) {
+  // PyTorch uses int8_t as its torch::DeviceIndex, but FFmpeg and XPU
+  // libraries use int. So we use int, too.
+  int deviceIndex = static_cast<int>(device.index());
+  TORCH_CHECK(
+      deviceIndex >= -1 && deviceIndex < MAX_XPU_GPUS,
+      "Invalid device index = ",
+      deviceIndex);
+
+  return (deviceIndex == -1)? 0: deviceIndex;
+}
 
 XpuDeviceInterface::XpuDeviceInterface(const torch::Device& device)
     : DeviceInterface(device) {
@@ -87,8 +99,10 @@ XpuDeviceInterface::~XpuDeviceInterface() {
 
 void XpuDeviceInterface::initialize(
     const AVStream* avStream,
-    [[maybe_unused]] const UniqueDecodingAVFormatContext& avFormatCtx) {
+    [[maybe_unused]] const UniqueDecodingAVFormatContext& avFormatCtx,
+    [[maybe_unused]] const SharedAVCodecContext& codecContext) {
   TORCH_CHECK(avStream != nullptr, "avStream is null");
+  codecContext_ = codecContext;
   timeBase_ = avStream->time_base;
 }
 
