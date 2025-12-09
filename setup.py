@@ -56,13 +56,13 @@ class CMakeBuild(build_ext):
         #   copy_extensions_to_source()
         # - the (temp) wheel directory (when building a wheel). I cannot tell
         #   exactly *where* this is handled, but for this to work we must
-        #   prepend the "/torchcodec" folder to _install_prefix: this tells
-        #   setuptools to eventually move those .so files into `torchcodec/`.
+        #   prepend the "/torchcodec_xpu" folder to _install_prefix: this tells
+        #   setuptools to eventually move those .so files into `torchcodec_xpu/`.
         # It may seem overkill to 'cmake install' the extensions in a temp
         # directory and move them back to another dir, but this is what
         # setuptools would do and expect even in a standard build setup.
         self._install_prefix = (
-            Path(self.get_ext_fullpath(ext.name)).parent.absolute() / "torchcodec"
+            Path(self.get_ext_fullpath(ext.name)).parent.absolute() / "torchcodec_xpu"
         )
         self._build_all_extensions_with_cmake()
 
