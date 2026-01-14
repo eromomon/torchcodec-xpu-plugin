@@ -19,8 +19,6 @@ extern "C" {
 #include "XpuDeviceInterface.h"
 
 extern "C" {
-#include <libavfilter/buffersink.h>
-#include <libavfilter/buffersrc.h>
 #include <libavutil/hwcontext_vaapi.h>
 #include <libavutil/pixdesc.h>
 }
@@ -480,19 +478,12 @@ void XpuDeviceInterface::convertAVFrameToFrameOutput(
 // appropriately set, so we just go off and find the matching codec for the CUDA
 // device
 std::optional<const AVCodec*> XpuDeviceInterface::findCodec(
-    const AVCodecID& codecId,
-    bool isDecoder) {
+    const AVCodecID& codecId) {
   void* i = nullptr;
   const AVCodec* codec = nullptr;
   while ((codec = av_codec_iterate(&i)) != nullptr) {
-    if (isDecoder) {
-      if (codec->id != codecId || !av_codec_is_decoder(codec)) {
-        continue;
-      }
-    } else {
-      if (codec->id != codecId || !av_codec_is_encoder(codec)) {
-        continue;
-      }
+    if (codec->id != codecId || !av_codec_is_decoder(codec)) {
+      continue;
     }
 
     const AVCodecHWConfig* config = nullptr;
