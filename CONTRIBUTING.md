@@ -36,9 +36,10 @@ apt-get install \
     libaom-dev \
     libmp3lame-dev \
     libx264-dev \
+    libx265-dev \
     libva-dev \
-    libvpx-dev \
-    libx265-dev
+    libvpx-dev 
+    
 
 ./configure \
     --prefix=$HOME/_install \
@@ -52,8 +53,9 @@ apt-get install \
     --enable-gpl \
     --enable-libaom \
     --enable-libx264 \
-    --enable-libvpx \
-    --enable-libx265
+    --enable-libx265 \
+    --enable-libvpx 
+    
 ```
 
 Finally, execute the tests with:
