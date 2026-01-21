@@ -38,8 +38,7 @@ apt-get install \
     libx264-dev \
     libx265-dev \
     libva-dev \
-    libvpx-dev 
-    
+    libvpx-dev
 
 ./configure \
     --prefix=$HOME/_install \
@@ -54,8 +53,7 @@ apt-get install \
     --enable-libaom \
     --enable-libx264 \
     --enable-libx265 \
-    --enable-libvpx 
-    
+    --enable-libvpx
 ```
 
 Finally, execute the tests with:
