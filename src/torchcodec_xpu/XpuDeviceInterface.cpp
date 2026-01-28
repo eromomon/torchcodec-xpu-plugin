@@ -19,11 +19,16 @@ extern "C" {
 #include "XpuDeviceInterface.h"
 
 extern "C" {
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavutil/hwcontext_vaapi.h>
 #include <libavutil/pixdesc.h>
 }
 
 namespace facebook::torchcodec {
+
+  const bool USE_SYCL_COLOR_CONVERSION_KERNEL = true;
+
 namespace {
 
 static bool g_xpu = registerDeviceInterface(
@@ -93,6 +98,14 @@ XpuDeviceInterface::XpuDeviceInterface(const torch::Device& device)
   torch::Tensor dummyTensorForXpuInitialization = torch::empty(
       {1}, torch::TensorOptions().dtype(torch::kUInt8).device(device_));
   ctx_ = getVaapiContext(device_);
+
+  if (USE_SYCL_COLOR_CONVERSION_KERNEL) {
+    std::cout << "XpuDeviceInterface initialized with SYCL kernel backend" << std::endl;
+    VLOG(1) << "Backend: SYCL_KERNEL (Direct NV12→RGB)";
+  } else {
+    std::cout << "XpuDeviceInterface initialized with VAAPI filter graph backend" << std::endl;
+    VLOG(1) << "Backend: VAAPI_FILTER (Flexible, with scaling)";
+  }
 }
 
 XpuDeviceInterface::~XpuDeviceInterface() {
@@ -374,7 +387,7 @@ VADisplay getVaDisplayFromAV(UniqueAVFrame& avFrame) {
   return vactx->display;
 }
 
-void XpuDeviceInterface::convertAVFrameToFrameOutput(
+void XpuDeviceInterface::convertAVFrameToFrameOutput_SYCL(
     UniqueAVFrame& avFrame,
     FrameOutput& frameOutput,
     std::optional<torch::Tensor> preAllocatedOutputTensor) {
@@ -403,6 +416,18 @@ void XpuDeviceInterface::convertAVFrameToFrameOutput(
   } else {
     dst = allocateEmptyHWCTensor(frameDims, device_);
   }
+
+
+  // Distinguish two paths: SYCL Kernel implementation vs VAAPI Filter Graph implementation
+//  if (USE_SYCL_KERNEL_BACKEND) {
+//    // Path 1: SYCL Kernel Backend
+//    VLOG(2) << "Using SYCL kernel backend for conversion";
+//    convertAVFrameToFrameOutput_SYCL(avFrame, frameOutput, frameDims, dst);
+//  } else {
+//    // Path 2: VAAPI Filter Graph Backend
+//    VLOG(2) << "Using VAAPI filter graph backend for conversion";
+//    convertAVFrameToFrameOutput_FilterGraph(avFrame, frameOutput, frameDims, dst);
+//  }
 
   // Check if we can do a direct/high-quality conversion via AVFrameToTensor (e.g. Tiled sws_scale path)
   // This bypasses the VAAPI filter graph if the export handles color conversion.
@@ -496,6 +521,130 @@ void XpuDeviceInterface::convertAVFrameToFrameOutput(
   VLOG(9) << "Conversion (SYCL) of frame height=" << frameDims.height << " width=" << frameDims.width
           << " took: " << duration.count() << "us" << std::endl;
 }
+
+void XpuDeviceInterface::convertAVFrameToFrameOutput_FilterGraph(
+    UniqueAVFrame& avFrame,
+    FrameOutput& frameOutput,
+    std::optional<torch::Tensor> preAllocatedOutputTensor) {
+  // TODO: consider to copy handling of CPU frame from CUDA
+  // TODO: consider to copy NV12 format check from CUDA
+  TORCH_CHECK(
+      avFrame->format == AV_PIX_FMT_VAAPI,
+      "Expected format to be AV_PIX_FMT_VAAPI, got " +
+          std::string(av_get_pix_fmt_name((AVPixelFormat)avFrame->format)));
+  auto frameDims = FrameDims(avFrame->height, avFrame->width);
+  torch::Tensor& dst = frameOutput.data;
+  if (preAllocatedOutputTensor.has_value()) {
+    auto shape = preAllocatedOutputTensor.value().sizes();
+    TORCH_CHECK(
+        (shape.size() == 3) && (shape[0] == frameDims.height) &&
+	    (shape[1] == frameDims.width) && (shape[2] == 3),
+        "Expected tensor of shape ",
+        frameDims.height,
+        "x",
+        frameDims.width,
+        "x3, got ",
+        shape);
+    dst = preAllocatedOutputTensor.value();
+  } else {
+    dst = allocateEmptyHWCTensor(frameDims, device_);
+  }
+
+  auto start = std::chrono::high_resolution_clock::now();
+  // We need to compare the current frame context with our previous frame
+  // context. If they are different, then we need to re-create our colorspace
+  // conversion objects. We create our colorspace conversion objects late so
+  // that we don't have to depend on the unreliable metadata in the header.
+  // And we sometimes re-create them because it's possible for frame
+  // resolution to change mid-stream. Finally, we want to reuse the colorspace
+  // conversion objects as much as possible for performance reasons.
+  enum AVPixelFormat frameFormat =
+      static_cast<enum AVPixelFormat>(avFrame->format);
+  FiltersContext filtersContext;
+
+  filtersContext.inputWidth = avFrame->width;
+  filtersContext.inputHeight = avFrame->height;
+  filtersContext.inputFormat = frameFormat;
+  filtersContext.inputAspectRatio = avFrame->sample_aspect_ratio;
+  // Actual output color format will be set via filter options
+  filtersContext.outputFormat = AV_PIX_FMT_VAAPI;
+  filtersContext.timeBase = timeBase_;
+  filtersContext.hwFramesCtx.reset(av_buffer_ref(avFrame->hw_frames_ctx));
+
+  std::stringstream filters;
+  filters << "scale_vaapi=" << frameDims.width << ":" << frameDims.height;
+  // CPU device interface outputs RGB in full (pc) color range.
+  // We are doing the same to match.
+  filters << ":format=rgba:out_range=pc";
+
+  filtersContext.filtergraphStr = filters.str();
+
+  if (!filterGraphContext_ || prevFiltersContext_ != filtersContext) {
+    filterGraphContext_ =
+        std::make_unique<FilterGraph>(filtersContext, videoStreamOptions_);
+    prevFiltersContext_ = std::move(filtersContext);
+  }
+
+  // We convert input to the RGBX color format with VAAPI getting WxHx4
+  // tensor on the output.
+  UniqueAVFrame filteredAVFrame = filterGraphContext_->convert(avFrame);
+
+  TORCH_CHECK_EQ(filteredAVFrame->format, AV_PIX_FMT_VAAPI);
+
+  torch::Tensor dst_rgb4 = AVFrameToTensor(device_, filteredAVFrame);
+  dst.copy_(dst_rgb4.narrow(2, 0, 3));
+
+  auto end = std::chrono::high_resolution_clock::now();
+
+  std::chrono::duration<double, std::micro> duration = end - start;
+  VLOG(9) << "Conversion of frame height=" << frameDims.height << " width=" << frameDims.width
+          << " took: " << duration.count() << "us" << std::endl;
+}
+
+
+void XpuDeviceInterface::convertAVFrameToFrameOutput(
+    UniqueAVFrame& avFrame,
+    FrameOutput& frameOutput,
+    std::optional<torch::Tensor> preAllocatedOutputTensor) {
+  
+  // ===== VALIDATION =====
+  TORCH_CHECK(
+      avFrame->format == AV_PIX_FMT_VAAPI,
+      "Expected VAAPI format");
+  
+  auto frameDims = FrameDims(avFrame->height, avFrame->width);
+  torch::Tensor& dst = frameOutput.data;
+  
+  // ===== ALLOCATE OUTPUT =====
+  if (preAllocatedOutputTensor.has_value()) {
+    dst = preAllocatedOutputTensor.value();
+  } else {
+    dst = allocateEmptyHWCTensor(frameDims, device_);
+  }
+  
+  // ===== DISPATCHER: HARDCODED SELECTION =====
+  //
+  // The key decision point: which backend to use?
+  // This is evaluated at compile-time (zero overhead)
+  //
+  if (USE_SYCL_COLOR_CONVERSION_KERNEL) {
+    // ===== BRANCH A: SYCL Kernel =====
+    // Fast, direct NV12→RGB conversion
+    // Limited to NV12 format
+    // High performance for tiled/linear surfaces
+    convertAVFrameToFrameOutput_SYCL(avFrame, frameOutput, preAllocatedOutputTensor);
+  } else {
+    // ===== BRANCH B: VAAPI Filter Graph =====
+    // Flexible, handles multiple formats
+    // Supports scaling via scale_vaapi filter
+    // Converts via RGBA intermediate (4 channels)
+    convertAVFrameToFrameOutput_FilterGraph(avFrame, frameOutput, preAllocatedOutputTensor);
+  }
+  
+  // ===== POST-PROCESSING (Common to Both) =====
+  // (Any common cleanup or validation here)
+}
+
 
 // inspired by https://github.com/FFmpeg/FFmpeg/commit/ad67ea9
 // we have to do this because of an FFmpeg bug where hardware decoding is not

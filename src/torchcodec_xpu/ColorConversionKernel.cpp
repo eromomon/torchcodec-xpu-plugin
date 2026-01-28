@@ -14,11 +14,11 @@ const float3x3 rgb_matrix_bt709 = {
   sycl::float3{ 1.0, 1.8556, 0.0 }
 };
 
-const sycl::float3 rgb_matrix_bt601[3] = {
-  { 1.0, 0.0, 1.402 },
-  { 1.0, -0.344136, -0.714136 },
-  { 1.0, 1.772, 0.0}
-};
+//const sycl::float3 rgb_matrix_bt601[3] = {
+//  { 1.0, 0.0, 1.402 },
+//  { 1.0, -0.344136, -0.714136 },
+//  { 1.0, 1.772, 0.0}
+//};
 
 sycl::uchar3 yuv2rgb(uint8_t y, uint8_t u, uint8_t v, bool fullrange, const float3x3 &rgb_matrix) {
   sycl::float3 src;

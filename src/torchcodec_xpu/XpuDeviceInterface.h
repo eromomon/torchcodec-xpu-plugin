@@ -3,6 +3,7 @@
 #pragma once
 
 #include "DeviceInterface.h"
+#include "FilterGraph.h"
 
 namespace facebook::torchcodec {
 
@@ -41,6 +42,21 @@ class XpuDeviceInterface : public DeviceInterface {
   AVRational timeBase_;
 
   UniqueAVBufferRef ctx_;
+
+  std::unique_ptr<FilterGraph> filterGraphContext_;
+  FiltersContext prevFiltersContext_;
+
+  void convertAVFrameToFrameOutput_SYCL(
+      UniqueAVFrame& avFrame,
+      FrameOutput& frameOutput,
+      std::optional<torch::Tensor> preAllocatedOutputTensor);
+
+  void convertAVFrameToFrameOutput_FilterGraph(
+      UniqueAVFrame& avFrame,
+      FrameOutput& frameOutput,
+      std::optional<torch::Tensor> preAllocatedOutputTensor);
+
+
 };
 
 } // namespace facebook::torchcodec
