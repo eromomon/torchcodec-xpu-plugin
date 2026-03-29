@@ -3,7 +3,6 @@
 #pragma once
 
 #include "DeviceInterface.h"
-#include "FilterGraph.h"
 
 namespace facebook::torchcodec {
 
@@ -14,8 +13,7 @@ class XpuDeviceInterface : public DeviceInterface {
   virtual ~XpuDeviceInterface();
 
   std::optional<const AVCodec*> findCodec(
-      const AVCodecID& codecId,
-      bool isDecoder = true) override;
+      const AVCodecID& codecId) override;
 
   void initialize(
       const AVStream* avStream,
@@ -42,12 +40,6 @@ class XpuDeviceInterface : public DeviceInterface {
   AVRational timeBase_;
 
   UniqueAVBufferRef ctx_;
-
-  std::unique_ptr<FilterGraph> filterGraphContext_;
-
-  // Used to know whether a new FilterGraphContext should
-  // be created before decoding a new frame.
-  FiltersContext prevFiltersContext_;
 };
 
 } // namespace facebook::torchcodec
